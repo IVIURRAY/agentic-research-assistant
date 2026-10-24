@@ -20,7 +20,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.agent import cited_note_ids, graph, initial_state
 from app.config import settings
 from app.db import close_pool, get_pool, init_schema
-from app.retrieval import get_note, list_coverage
+from app.retrieval import get_note, get_note_chunks, list_coverage
 from app.telemetry import current_trace_run_id, setup_telemetry, shutdown_telemetry, span, to_attr
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -75,7 +75,10 @@ def _user_error(exc: Exception) -> str:
         return ("OpenRouter rate limit hit. Free models allow 20 requests/minute and 50/day "
                 "(1000/day after buying $10 of credits). Wait, or switch OPENROUTER_MODEL.")
     if isinstance(exc, openai.NotFoundError):
-        return f"OpenRouter doesn't recognise model {settings.openrouter_model!r}: {exc}"
+        return (f"OpenRouter returned 404 for model {settings.openrouter_model!r}: the model id "
+                f"is wrong, or its upstream provider is down. Check "
+                f"https://openrouter.ai/{settings.openrouter_model.split(':')[0]} or set "
+                f"OPENROUTER_MODEL to another model. ({exc})")
     if isinstance(exc, openai.APIConnectionError):
         return "Could not reach OpenRouter. Check your network and OPENROUTER_BASE_URL."
     return f"{type(exc).__name__}: {exc}"
@@ -180,7 +183,8 @@ async def note(note_id: str):
     found = await asyncio.to_thread(get_note, note_id)
     if found is None:
         raise HTTPException(404, "note not found")
-    return found
+    # Chunks let the UI show the full note with the retrieved passages highlighted.
+    return {**found, "chunks": await asyncio.to_thread(get_note_chunks, note_id)}
 
 
 @app.get("/coverage")

@@ -182,6 +182,16 @@ def get_note(note_id: str) -> dict[str, Any] | None:
     return note
 
 
+def get_note_chunks(note_id: str) -> list[dict[str, Any]]:
+    """A note's chunks in reading order; together they make up the whole body."""
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id, heading, content FROM chunks WHERE note_id = %s ORDER BY chunk_index",
+            (note_id,),
+        ).fetchall()
+    return [{"chunk_id": r[0], "heading": r[1], "content": r[2]} for r in rows]
+
+
 def list_coverage() -> list[dict[str, Any]]:
     """Tickers and sectors in the store; used to ground the agent's filter extraction."""
     with get_pool().connection() as conn:

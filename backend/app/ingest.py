@@ -1,7 +1,12 @@
-"""Offline ingestion: markdown notes with frontmatter -> heading chunks -> embeddings -> Postgres.
+"""Offline ingestion: markdown notes with frontmatter -> paragraph chunks -> embeddings -> Postgres.
+
+Each chunk is one paragraph within a section (headings are kept as chunk metadata, and are part
+of the text that gets embedded). Very short paragraphs, like a one-line footnote, are merged into
+the previous paragraph of the same section so they don't become near-empty chunks.
 
 Run with:  python -m app.ingest [--notes-dir DIR]
 Idempotent: unchanged notes (by content hash) are skipped; changed notes are re-chunked.
+Bump CHUNKER_VERSION when chunking changes, so every note is re-chunked on the next run.
 """
 
 from __future__ import annotations
@@ -22,7 +27,9 @@ from app.embeddings import embed_passages
 
 log = logging.getLogger("ingest")
 
+CHUNKER_VERSION = "paragraphs-v1"
 MAX_CHUNK_CHARS = 1200
+MIN_PARAGRAPH_CHARS = 120  # shorter paragraphs merge into the previous one in the same section
 _HEADING = re.compile(r"^(#{1,3})\s+(.*)$")
 
 
@@ -44,7 +51,9 @@ class Note:
 
     @property
     def content_hash(self) -> str:
-        return hashlib.sha256(f"{self.title}\n{self.body}".encode()).hexdigest()
+        return hashlib.sha256(
+            f"{CHUNKER_VERSION}\n{self.title}\n{self.body}".encode()
+        ).hexdigest()
 
 
 @dataclass
@@ -80,22 +89,36 @@ def parse_note(path: Path) -> Note:
     )
 
 
+def _paragraphs(text: str) -> list[str]:
+    """Split a section into paragraphs, merging very short ones into the previous paragraph."""
+    paras: list[str] = []
+    for para in (p.strip() for p in re.split(r"\n\s*\n", text)):
+        if not para:
+            continue
+        if paras and len(para) < MIN_PARAGRAPH_CHARS:
+            paras[-1] = f"{paras[-1]}\n\n{para}"
+        else:
+            paras.append(para)
+    return paras
+
+
 def _split_long(text: str, limit: int = MAX_CHUNK_CHARS) -> list[str]:
+    """A guard for unusually long paragraphs: split on sentence boundaries."""
     if len(text) <= limit:
         return [text]
     parts, current = [], ""
-    for para in re.split(r"\n\s*\n", text):
-        if current and len(current) + len(para) + 2 > limit:
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if current and len(current) + len(sentence) + 1 > limit:
             parts.append(current.strip())
             current = ""
-        current += para + "\n\n"
+        current += sentence + " "
     if current.strip():
         parts.append(current.strip())
     return parts
 
 
 def chunk_note(note: Note) -> list[Chunk]:
-    """Split by markdown heading; oversized sections split on paragraph boundaries."""
+    """One chunk per paragraph, within markdown heading sections."""
     sections: list[tuple[str | None, list[str]]] = [(None, [])]
     for line in note.body.splitlines():
         m = _HEADING.match(line)
@@ -106,20 +129,11 @@ def chunk_note(note: Note) -> list[Chunk]:
 
     chunks: list[Chunk] = []
     for heading, lines in sections:
-        text = "\n".join(lines).strip()
-        if not text:
-            continue
-        for piece in _split_long(text):
-            idx = len(chunks)
-            chunks.append(
-                Chunk(
-                    chunk_id=f"{note.note_id}#{idx}",
-                    note_id=note.note_id,
-                    chunk_index=idx,
-                    heading=heading,
-                    content=piece,
-                )
-            )
+        for para in _paragraphs("\n".join(lines)):
+            for piece in _split_long(para):
+                idx = len(chunks)
+                chunks.append(Chunk(chunk_id=f"{note.note_id}#{idx}", note_id=note.note_id,
+                                    chunk_index=idx, heading=heading, content=piece))
     return chunks
 
 

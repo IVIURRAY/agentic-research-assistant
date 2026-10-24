@@ -181,7 +181,7 @@ ROW1, ROW2, ROW3 = 138, 330, 528
 
 BOXES = {b.key: b for b in [
     Box("notes", "Research notes", "markdown + frontmatter", COLS[0], ROW1),
-    Box("chunk", "Chunk", "split by heading", COLS[1], ROW1),
+    Box("chunk", "Chunk", "one per paragraph", COLS[1], ROW1),
     Box("embed", "Embed + upsert", "fastembed vectors", COLS[2], ROW1),
     Box("pg", "Postgres", "pgvector + full-text", COLS[3], ROW1),
     Box("ui", "Chat UI", "Next.js, citations", COLS[0], ROW2),
@@ -273,7 +273,7 @@ def script() -> tuple[list[Packet], dict[str, list[int]], list[tuple[int, int, s
     # Ingestion lane
     move(2, 12, B["notes"].right(), B["chunk"].left(), GREEN, "asml-2026-04-16.md",
          LABEL_ABOVE_ROW1)
-    move(12, 21, B["chunk"].right(), B["embed"].left(), GREEN, "§ Summary · § Risks",
+    move(12, 21, B["chunk"].right(), B["embed"].left(), GREEN, "¶ Summary · ¶ Risks",
          LABEL_ABOVE_ROW1)
     move(21, 30, B["embed"].right(), B["pg"].left(), GREEN, "[0.12, -0.40, ...]",
          LABEL_ABOVE_ROW1)

@@ -1,17 +1,20 @@
-"""LangGraph agent: an LLM in a tool loop over search_notes / get_note.
+"""LangGraph agent: a ReAct loop (reason, act, observe) over search_notes / get_note.
 
-    START -> agent --(tool_use)--> tools --> agent ... --(end_turn)--> END
+    START -> agent --(reply has tool calls)--> tools --> agent ... --(no tool calls)--> END
 
-The model is an OpenRouter model (default: NVIDIA Nemotron 3 Super, free) via ``app.llm``.
-The graph state holds the Chat Completions message list;
-assistant turns are appended exactly as returned and never edited, so history is append-only.
-Nodes push UI events (text deltas, tool calls, sources) through LangGraph's custom stream writer;
-the API turns those into SSE.
+The model decides when it has enough evidence, by replying without tool calls; the graph only
+routes on that. After MAX_AGENT_STEPS tool rounds, the next call disables tools, so the model
+must answer from what it has.
+
+The state holds the Chat Completions message list. Every message is appended exactly as
+received and never edited. Nodes push UI events (text deltas, tool calls, sources) through
+LangGraph's custom stream writer; the API turns those into SSE.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime as dt
 import logging
 import re
@@ -21,8 +24,8 @@ from typing import Any, TypedDict
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
+from app import llm
 from app.config import settings
-from app.llm import ToolResult, get_provider
 from app.retrieval import list_coverage
 from app.telemetry import span, to_attr
 from app.tools import TOOLS, ToolError, run_tool
@@ -57,12 +60,12 @@ Coverage in the note store (ticker | company | sector | notes | date range):
 class AgentState(TypedDict, total=False):
     system: str
     messages: list[dict[str, Any]]
-    pending_tool_calls: list[dict[str, Any]]
-    steps: int
-    trajectory: list[dict[str, Any]]
-    sources: dict[str, dict[str, Any]]
-    answer: str
-    stop_reason: str
+    pending_tool_calls: list[dict[str, Any]]  # tool calls from the latest reply, not yet run
+    steps: int  # model calls so far
+    trajectory: list[dict[str, Any]]  # every tool call made, for the UI and the evals
+    sources: dict[str, dict[str, Any]]  # note_id -> metadata + retrieved chunks, for citations
+    answer: str  # text of the latest reply
+    finish_reason: str
 
 
 @lru_cache(maxsize=1)
@@ -90,85 +93,76 @@ def _emit(event: dict[str, Any]) -> None:
 
 async def agent_node(state: AgentState) -> AgentState:
     steps = state.get("steps", 0) + 1
-    provider = get_provider()
+    budget_spent = steps > settings.max_agent_steps
     with span("agent", kind="chain", inputs={"step": steps}):
-        turn = await provider.stream_turn(
-            state["messages"], state.get("system") or system_prompt(), TOOLS, _emit
-        )
+        turn = await llm.stream_turn(state["messages"], state["system"], TOOLS, _emit,
+                                     allow_tools=not budget_spent)
 
-    messages = [*state["messages"], turn.assistant_message]
-    answer = state.get("answer", "")
-    if turn.text:
-        answer = f"{answer}\n\n{turn.text}".strip() if answer else turn.text
-    pending = [{"id": c.id, "name": c.name, "input": c.input, "parse_error": c.parse_error}
-               for c in turn.tool_calls]
-    update = {**state, "messages": messages, "steps": steps, "answer": answer,
-              "pending_tool_calls": pending, "stop_reason": turn.stop_reason}
-
-    if turn.stop_reason == "refusal":
-        _emit({"type": "text", "delta": "\n\nI can't help with that request."})
-    elif turn.stop_reason == "max_tokens" and pending:
-        # A truncated tool input can parse as a valid partial object; never run it.
+    calls = turn.tool_calls
+    if turn.finish_reason == "length" and calls:
+        # Truncated tool arguments can still parse as a valid partial object; never run them.
         _emit({"type": "error", "message": "Response hit max_tokens mid tool call."})
-    return update
+        calls = []
+    elif turn.finish_reason == "content_filter":
+        _emit({"type": "text", "delta": "\n\nI can't help with that request."})
+
+    return {**state,
+            "messages": [*state["messages"], turn.message],
+            "steps": steps,
+            "answer": turn.text,
+            "pending_tool_calls": [dataclasses.asdict(c) for c in calls],
+            "finish_reason": turn.finish_reason}
+
+
+def _add_sources(sources: dict[str, dict[str, Any]], found: list[dict[str, Any]]) -> None:
+    """Group retrieved chunks by note, for the citations panel."""
+    for src in found:
+        note = sources.setdefault(src["note_id"], {
+            k: v for k, v in src.items()
+            if k not in {"content", "chunk_id", "heading", "score", "ranks", "body"}
+        })
+        chunks = note.setdefault("chunks", [])
+        if all(c["chunk_id"] != src["chunk_id"] for c in chunks):
+            chunks.append({"chunk_id": src["chunk_id"], "heading": src.get("heading"),
+                           "content": src["content"], "score": src.get("score")})
 
 
 async def tools_node(state: AgentState) -> AgentState:
-    provider = get_provider()
-    calls = state.get("pending_tool_calls", [])
     trajectory = list(state.get("trajectory", []))
     sources = dict(state.get("sources", {}))
 
-    async def run_one(call: dict[str, Any]) -> ToolResult:
-        name, raw, cid = call["name"], call.get("input"), call["id"]
-        trajectory.append({"name": name, "input": raw})
+    async def run_one(call: dict[str, Any]) -> dict[str, Any]:
+        name, args, cid = call["name"], call["input"], call["id"]
+        trajectory.append({"name": name, "input": args})
         _emit({"type": "tool_call", "id": cid, "name": name,
-               "input": raw if isinstance(raw, dict) else {}})
-        with span(f"tool.{name}", kind="tool", inputs=raw, **{"gen_ai.tool.name": name}) as s:
+               "input": args if isinstance(args, dict) else {}})
+        with span(f"tool.{name}", kind="tool", inputs=args, **{"gen_ai.tool.name": name}) as s:
             try:
-                if call.get("parse_error"):
+                if call["parse_error"]:
                     raise ToolError(call["parse_error"])
-                text, found = await asyncio.to_thread(run_tool, name, raw)
+                text, found = await asyncio.to_thread(run_tool, name, args)
             except ToolError as exc:
+                # Errors go back to the model as the tool result, so it can correct itself.
                 s.set_attribute("output.value", str(exc))
                 _emit({"type": "tool_result", "id": cid, "name": name, "error": str(exc)})
-                return ToolResult(cid, str(exc), is_error=True)
+                return {"role": "tool", "tool_call_id": cid, "content": f"ERROR: {exc}"}
             s.set_attribute("output.value", to_attr(text))
-        for src in found:
-            sources.setdefault(src["note_id"], {k: v for k, v in src.items()
-                                                if k not in {"content", "chunk_id", "heading",
-                                                             "score", "ranks", "body"}})
-            sources[src["note_id"]].setdefault("chunks", [])
-            if not any(c["chunk_id"] == src["chunk_id"] for c in sources[src["note_id"]]["chunks"]):
-                sources[src["note_id"]]["chunks"].append(
-                    {"chunk_id": src["chunk_id"], "heading": src.get("heading"),
-                     "content": src["content"], "score": src.get("score")}
-                )
-        _emit({
-            "type": "tool_result", "id": cid, "name": name,
-            "results": [{"note_id": s["note_id"], "chunk_id": s["chunk_id"]} for s in found],
-        })
-        return ToolResult(cid, text)
+        _add_sources(sources, found)
+        _emit({"type": "tool_result", "id": cid, "name": name,
+               "results": [{"note_id": f["note_id"], "chunk_id": f["chunk_id"]} for f in found]})
+        return {"role": "tool", "tool_call_id": cid, "content": text}
 
-    # Parallel tool calls run concurrently; results go back together.
-    results = await asyncio.gather(*(run_one(c) for c in calls))
+    # Parallel tool calls run concurrently; every result goes back before the next model call.
+    results = await asyncio.gather(*(run_one(c) for c in state["pending_tool_calls"]))
     _emit({"type": "sources", "sources": sources})
-
-    messages = [*state["messages"], *provider.tool_result_messages(list(results))]
-    if state.get("steps", 0) >= settings.max_agent_steps:
-        messages.append(provider.system_note(
-            "Tool budget reached. Answer now from the evidence gathered so far, "
-            "without calling more tools, and say what is missing if anything."
-        ))
-    return {**state, "messages": messages, "trajectory": trajectory, "sources": sources,
-            "pending_tool_calls": []}
+    return {**state, "messages": [*state["messages"], *results], "trajectory": trajectory,
+            "sources": sources, "pending_tool_calls": []}
 
 
 def route_after_agent(state: AgentState) -> str:
-    if state.get("stop_reason") == "tool_use" and state.get("steps", 0) <= settings.max_agent_steps:
+    """Tool calls in the reply -> run them; none -> the model has answered."""
+    if state.get("pending_tool_calls") and state.get("steps", 0) <= settings.max_agent_steps:
         return "tools"
-    if state.get("stop_reason") == "pause_turn":
-        return "agent"
     return END
 
 
@@ -177,7 +171,7 @@ def build_graph():
     g.add_node("agent", agent_node)
     g.add_node("tools", tools_node)
     g.add_edge(START, "agent")
-    g.add_conditional_edges("agent", route_after_agent, {"tools": "tools", "agent": "agent", END: END})
+    g.add_conditional_edges("agent", route_after_agent, {"tools": "tools", END: END})
     g.add_edge("tools", "agent")
     return g.compile()
 

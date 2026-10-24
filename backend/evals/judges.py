@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from app.llm import get_provider
+from app import llm
 
 
 class CorrectnessVerdict(BaseModel):
@@ -55,7 +55,7 @@ only if that list is empty."""
 
 async def _judge(prompt: str, schema: type[BaseModel]) -> BaseModel:
     # OPENROUTER_JUDGE_MODEL, with structured (JSON schema) output.
-    return await get_provider().parse(prompt, schema)
+    return await llm.parse(prompt, schema)
 
 
 async def judge_correctness(question: str, answer: str, reference: str) -> CorrectnessVerdict:

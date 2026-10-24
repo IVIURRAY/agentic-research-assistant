@@ -12,7 +12,10 @@ Run:  python scripts/generate_notes.py [--out ../data/notes]
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
+
+from note_expansions import EXPANSIONS
 
 DISCLAIMER = (
     "_Synthetic note for demonstration purposes. Fictional figures; not investment advice._"
@@ -586,6 +589,18 @@ NOTES: list[dict] = [
 ]
 
 
+def full_sections(note: dict) -> list[tuple[str, str]]:
+    """The note's original sections (verbatim) plus its expansion sections, which go before
+    Risks (or at the end). Paragraphs within a section are separated by a blank line."""
+    extra = [(h, "\n\n".join(paras)) for h, paras in EXPANSIONS.get(note["note_id"], [])]
+    for _, text in extra:
+        if re.search(r"\d", text):
+            raise ValueError(f"{note['note_id']}: expansion text must not contain digits")
+    sections = list(note["sections"])
+    at = next((i for i, (h, _) in enumerate(sections) if h == "Risks"), len(sections))
+    return sections[:at] + extra + sections[at:]
+
+
 def render(note: dict) -> str:
     ticker = note.get("ticker")
     lines = ["---", f"note_id: {note['note_id']}", f"title: \"{note['title']}\""]
@@ -604,7 +619,7 @@ def render(note: dict) -> str:
     else:
         lines += [f"sector: {note['sector']}", f"analyst: \"{note['analyst']}\""]
     lines += [f"date: {note['date']}", "---", "", f"# {note['title']}", ""]
-    for heading, text in note["sections"]:
+    for heading, text in full_sections(note):
         lines += [f"## {heading}", "", text, ""]
     lines += [DISCLAIMER, ""]
     return "\n".join(lines)
@@ -616,6 +631,9 @@ def main() -> None:
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    unknown = set(EXPANSIONS) - {n["note_id"] for n in NOTES}
+    if unknown:
+        raise ValueError(f"expansions for unknown notes: {sorted(unknown)}")
     for note in NOTES:
         (out / f"{note['note_id']}.md").write_text(render(note))
     print(f"wrote {len(NOTES)} notes to {out}")

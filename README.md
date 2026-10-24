@@ -53,18 +53,19 @@ It also allows several tool calls per turn, run in parallel.
 (meaning "I need more") or without them (meaning "I can answer"). The graph never judges whether
 the evidence is sufficient. It routes mechanically on whether the reply contains tool calls
 (`route_after_agent` in [`agent.py`](backend/app/agent.py)). The one exception is the budget:
-after `MAX_AGENT_STEPS` (8) the graph adds an "answer now" note and stops routing to tools. The
+after `MAX_AGENT_STEPS` (8) the next model call runs with tools disabled (`tool_choice="none"`),
+so the model has to answer from the evidence it has. The
 trajectory eval checks the model chose the right tools and filters along the way.
 
 ## How it works
 
 | Layer | Choice | Where |
 |---|---|---|
-| Ingestion | Markdown + frontmatter → split by heading → local embeddings (fastembed, `bge-small`) → Postgres. Idempotent by content hash. | [`backend/app/ingest.py`](backend/app/ingest.py) |
+| Ingestion | Markdown + frontmatter → one chunk per paragraph within each section (the heading is kept as metadata and embedded with the text; one-line paragraphs merge into the previous one) → local embeddings (fastembed, `bge-small`) → Postgres. Idempotent by content hash, which includes a chunker version so chunking changes re-ingest everything. | [`backend/app/ingest.py`](backend/app/ingest.py) |
 | Store | Postgres 17 + pgvector: HNSW vectors, a generated `tsvector` for full-text, and SQL metadata filters, all in one container | [`backend/app/db.py`](backend/app/db.py) |
 | Retrieval | Dense + full-text legs → Reciprocal Rank Fusion → cross-encoder rerank (local by default, Cohere optional) | [`backend/app/retrieval.py`](backend/app/retrieval.py) |
 | Agent | LangGraph `agent ⇄ tools` graph. History is append-only, parallel tool calls run concurrently, and a step budget caps the loop. | [`backend/app/agent.py`](backend/app/agent.py) |
-| LLM | OpenRouter's OpenAI-compatible API, with streaming tool calls. Default `nvidia/nemotron-3-super-120b-a12b:free`; any OpenRouter model with tool calling works | [`backend/app/llm.py`](backend/app/llm.py) |
+| LLM | OpenRouter's OpenAI-compatible API, with streaming tool calls. Default `nvidia/nemotron-3.5-super-vl:free`; any OpenRouter model with tool calling works | [`backend/app/llm.py`](backend/app/llm.py) |
 | API | FastAPI + SSE events: `run`, `tool_call`, `tool_result`, `sources`, `text`, `done`, plus `POST /feedback` | [`backend/app/main.py`](backend/app/main.py) |
 | UI | Next.js + Vercel AI SDK (`useChat`). A route handler converts the API's SSE into AI SDK message parts. | [`frontend/`](frontend) |
 | Tracing | OTel SDK → LangSmith's OTLP endpoint (or any OTLP backend). Spans cover HTTP, graph nodes, LLM calls, tools and retrieval. Traces are tagged with `session_id`, so LangSmith groups each conversation as a thread. | [`backend/app/telemetry.py`](backend/app/telemetry.py) |
@@ -85,7 +86,7 @@ below any threshold exits non-zero, which is what turns it into a release gate.
 ## Quick start (Docker)
 
 You need Docker and an [OpenRouter key](https://openrouter.ai/settings/keys). The default model is
-NVIDIA Nemotron 3 Super (`nvidia/nemotron-3-super-120b-a12b:free`), which supports the tool calling
+NVIDIA Nemotron 3.5 Super (`nvidia/nemotron-3.5-super-vl:free`), which supports the tool calling
 and structured output this app needs, at no per-token cost.
 
 - Without credits, free models allow **50 requests a day**: enough to try the app and run
@@ -198,11 +199,12 @@ All settings are environment variables. See [`.env.example`](.env.example) and
 | Variable | Default | Notes |
 |---|---|---|
 | `OPENROUTER_API_KEY` | none | Required |
-| `OPENROUTER_MODEL` / `OPENROUTER_JUDGE_MODEL` | `nvidia/nemotron-3-super-120b-a12b:free` | Any OpenRouter model that supports tool calling (and structured outputs, for the judge). Other free NVIDIA options: `nvidia/nemotron-3-ultra-550b-a55b:free`, `nvidia/nemotron-3.5-lightning:free` |
+| `OPENROUTER_MODEL` / `OPENROUTER_JUDGE_MODEL` | `nvidia/nemotron-3.5-super-vl:free` | Any OpenRouter model that supports tool calling (and structured outputs, for the judge). Other free NVIDIA options: `nvidia/nemotron-3-super-120b-a12b:free`, `nvidia/nemotron-3-ultra-550b-a55b:free`, `nvidia/nemotron-3.5-lightning:free` |
 | `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | none / `research-assistant` | Enables OTLP export, LangSmith experiments and feedback |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none | Send traces to Phoenix, Datadog, a collector, … instead |
 | `RERANKER` | `local` | `local`, `cohere` (needs `COHERE_API_KEY`), or `none` |
 | `TOP_K` / `MAX_AGENT_STEPS` | `8` / `8` | Chunks per search / tool-loop budget |
+| `CANDIDATE_K` / `RERANK_K` | `80` / `24` | Chunks fetched per search leg before fusion / chunks the cross-encoder rescores |
 
 ## Project layout
 

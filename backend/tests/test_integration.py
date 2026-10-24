@@ -15,7 +15,6 @@ from openai.types.chat import ChatCompletionChunk
 
 from app import agent
 from app.config import settings
-from app.llm import OpenRouterProvider
 
 
 def _db_ready() -> bool:
@@ -40,19 +39,24 @@ def _chunk(delta: dict, finish: str | None = None, usage: dict | None = None) ->
 
 class FakeOpenRouter:
     """Scripted OpenAI-compatible stream: a tool call whose JSON arrives in fragments, then an
-    answer. Mirrors how OpenRouter streams tool calls (index-keyed argument deltas)."""
+    answer. Mirrors how OpenRouter streams tool calls (index-keyed argument deltas).
+    With ``always_search`` it keeps calling tools until tools are disabled."""
 
-    def __init__(self):
+    def __init__(self, always_search: bool = False):
         self.requests: list[dict] = []
+        self.always_search = always_search
         self.chat = self
         self.completions = self
 
     async def create(self, **kwargs):
         self.requests.append(kwargs)
         answered_tool = kwargs["messages"][-1]["role"] == "tool"
-        if not answered_tool:
+        wants_tool = (self.always_search or not answered_tool) and kwargs["tool_choice"] != "none"
+        if wants_tool:
             chunks = [
-                _chunk({"role": "assistant", "tool_calls": [{"index": 0, "id": "call_1",
+                # Some models narrate before calling a tool; that text must not be the answer.
+                _chunk({"role": "assistant", "content": "Let me search the notes. "}),
+                _chunk({"tool_calls": [{"index": 0, "id": f"call_{len(self.requests)}",
                         "type": "function", "function": {"name": "search_notes",
                                                          "arguments": '{"query": "ASML rating'}}]}),
                 _chunk({"tool_calls": [{"index": 0, "function": {
@@ -76,23 +80,22 @@ class FakeOpenRouter:
         return gen()
 
 
-@pytest.fixture
-def fake_openrouter(monkeypatch):
-    import dataclasses
-
+def _use_fake(monkeypatch, fake: FakeOpenRouter) -> FakeOpenRouter:
     from app import llm
 
-    monkeypatch.setattr(llm, "settings", dataclasses.replace(settings, openrouter_api_key="k"))
-    fake = FakeOpenRouter()
-    provider = OpenRouterProvider()
-    provider._client = fake
-    monkeypatch.setattr(agent, "get_provider", lambda: provider)
+    monkeypatch.setattr(llm, "_client", lambda: fake)
     return fake
+
+
+@pytest.fixture
+def fake_openrouter(monkeypatch):
+    return _use_fake(monkeypatch, FakeOpenRouter())
 
 
 async def test_openrouter_tool_loop(fake_openrouter):
     state = await agent.run_agent("What's our ASML rating?")
-    assert state["stop_reason"] == "end_turn"
+    assert state["finish_reason"] == "stop"
+    assert state["answer"].startswith("We upgraded")  # the final reply only, not the narration
     assert state["trajectory"] == [
         {"name": "search_notes", "input": {"query": "ASML rating changes", "ticker": "ASML"}}
     ]
@@ -103,7 +106,7 @@ async def test_openrouter_tool_loop(fake_openrouter):
     assert first["messages"][0]["role"] == "system"
     assert "ASML" in first["messages"][0]["content"]  # coverage list is in the prompt
     assert first["tools"][0]["function"]["name"] == "search_notes"
-    assert "eager_input_streaming" not in first["tools"][0]["function"]
+    assert first["tool_choice"] == "auto"
     # Assistant tool-call turn is echoed back, followed by a role=tool result.
     assistant, tool = second["messages"][-2:]
     assert assistant["tool_calls"][0]["function"]["arguments"] == (
@@ -112,6 +115,19 @@ async def test_openrouter_tool_loop(fake_openrouter):
     assert "asml-2026-04-16" in tool["content"]
     # History is append-only: the second request starts with the first request's messages.
     assert second["messages"][: len(first["messages"])] == first["messages"]
+
+
+async def test_step_budget_forces_an_answer(monkeypatch):
+    """A model that never stops searching gets tools disabled after MAX_AGENT_STEPS."""
+    import dataclasses
+
+    fake = _use_fake(monkeypatch, FakeOpenRouter(always_search=True))
+    monkeypatch.setattr(agent, "settings", dataclasses.replace(settings, max_agent_steps=2))
+    state = await agent.run_agent("What's our ASML rating?")
+
+    assert [r["tool_choice"] for r in fake.requests] == ["auto", "auto", "none"]
+    assert len(state["trajectory"]) == 2
+    assert agent.cited_note_ids(state["answer"]) == ["asml-2026-04-16", "asml-2026-01-14"]
 
 
 def test_sse_endpoint(fake_openrouter):
@@ -140,5 +156,10 @@ def test_sse_endpoint(fake_openrouter):
         assert fb.json() == {"ok": True}
         with psycopg.connect(settings.database_url) as conn:
             conn.execute("DELETE FROM feedback WHERE run_id = 'test-r1'")
-        assert client.get("/notes/asml-2026-04-16").json()["rating"] == "Buy"
+        note = client.get("/notes/asml-2026-04-16").json()
+        assert note["rating"] == "Buy"
+        # Chunks come back in reading order and together cover the body.
+        assert [c["chunk_id"] for c in note["chunks"]] == [
+            f"asml-2026-04-16#{i}" for i in range(len(note["chunks"]))]
+        assert all(c["content"] in note["body"] for c in note["chunks"])
         assert client.get("/notes/nope").status_code == 404

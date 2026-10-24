@@ -37,3 +37,8 @@ export type ResearchMessage = UIMessage<
   never,
   { run: RunData; tool: ToolData; sources: SourcesData }
 >;
+
+export type NoteDetail = Omit<Source, "chunks"> & {
+  body: string;
+  chunks: { chunk_id: string; heading: string | null; content: string }[];
+};

@@ -8,7 +8,7 @@ Same hand-drawn style as architecture.gif. Three panels:
 
 The point it makes: the *model* decides whether it has enough to answer (by replying with or
 without tool calls); the *graph* only routes on that, plus a step-budget guardrail. This mirrors
-``route_after_agent`` and ``tools_node`` in app/agent.py.
+``agent_node`` and ``route_after_agent`` in app/agent.py.
 
     python scripts/render_agent_gif.py [--out ../docs/agent-loop.gif]
 """
@@ -21,11 +21,31 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageDraw
-
 from render_architecture_gif import (
-    AMBER, AMBER_SOFT, BLUE, BLUE_SOFT, F_BOX, F_SUB, F_TAG, F_TITLE, GREEN, GREEN_SOFT, GRID,
-    INK, MUTED, PAPER, PINK, S, _along, _jitter_line, caption_pill, font, label_pill,
-    sketch_arrow, sketch_box, text,
+    AMBER,
+    AMBER_SOFT,
+    BLUE,
+    BLUE_SOFT,
+    F_BOX,
+    F_SUB,
+    F_TAG,
+    F_TITLE,
+    GREEN,
+    GREEN_SOFT,
+    GRID,
+    INK,
+    MUTED,
+    PAPER,
+    PINK,
+    S,
+    _along,
+    _jitter_line,
+    caption_pill,
+    font,
+    label_pill,
+    sketch_arrow,
+    sketch_box,
+    text,
 )
 
 W, H = 1400, 700
@@ -164,7 +184,7 @@ CAPTIONS = [
     (126, 188, "Reason + Act again: not enough yet, so it searches with new filters", AMBER),
     (188, 244, "Answer: enough evidence, so it replies with no tool call and the graph ends",
      BLUE),
-    (244, 300, "Guardrail: after 8 steps the graph adds \"answer now\" and stops looping",
+    (244, 300, "Guardrail: after 8 steps, the next call has tools disabled, so it must answer",
      PINK),
 ]
 TOTAL = 300
@@ -292,7 +312,7 @@ def render_frame(f: int) -> Image.Image:
         d.rounded_rectangle([392 * S, 520 * S, 890 * S, 588 * S], radius=12 * S, fill=PINK_SOFT,
                             outline=PINK, width=2 * S)
         text(d, (641, 540), "If the model keeps calling tools past step 8:", F_SMALL_B, INK)
-        text(d, (641, 564), "a system note says \"answer now\", then the graph routes to END",
+        text(d, (641, 564), "the next call disables tools, so the model must answer",
              F_SMALL, INK)
 
     # ---- right: conversation state

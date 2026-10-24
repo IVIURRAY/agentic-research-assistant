@@ -31,12 +31,12 @@ class Settings:
     )
     openrouter_model: str = field(
         default_factory=lambda: os.getenv(
-            "OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free"
+            "OPENROUTER_MODEL", "nvidia/nemotron-3.5-super-vl:free"
         )
     )
     openrouter_judge_model: str = field(
         default_factory=lambda: os.getenv(
-            "OPENROUTER_JUDGE_MODEL", "nvidia/nemotron-3-super-120b-a12b:free"
+            "OPENROUTER_JUDGE_MODEL", "nvidia/nemotron-3.5-super-vl:free"
         )
     )
     max_agent_steps: int = field(default_factory=lambda: int(os.getenv("MAX_AGENT_STEPS", "8")))
@@ -53,7 +53,10 @@ class Settings:
     cohere_rerank_model: str = field(
         default_factory=lambda: os.getenv("COHERE_RERANK_MODEL", "rerank-v3.5")
     )
-    candidate_k: int = field(default_factory=lambda: int(os.getenv("CANDIDATE_K", "40")))
+    # Chunks fetched per leg (dense, full-text) before fusion. Paragraph chunks mean ~4 per note,
+    # so the pool needs to be deep enough to cover enough distinct notes; this is cheap (SQL),
+    # unlike rerank_k, which sets how many the cross-encoder scores.
+    candidate_k: int = field(default_factory=lambda: int(os.getenv("CANDIDATE_K", "80")))
     rerank_k: int = field(default_factory=lambda: int(os.getenv("RERANK_K", "24")))
     top_k: int = field(default_factory=lambda: int(os.getenv("TOP_K", "8")))
     rrf_k: int = 60

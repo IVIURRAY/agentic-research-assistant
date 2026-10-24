@@ -10,62 +10,46 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.retrieval import SearchFilters, get_note, hybrid_search
 
+
+def _tool(name: str, description: str, properties: dict, required: list[str]) -> dict:
+    """A tool definition in the Chat Completions (OpenAI) function-calling format."""
+    return {"type": "function", "function": {
+        "name": name,
+        "description": description,
+        "parameters": {"type": "object", "properties": properties, "required": required,
+                       "additionalProperties": False},
+    }}
+
+
 TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "search_notes",
-        "description": (
-            "Hybrid (semantic + keyword) search over the firm's equity research notes. Returns the "
-            "most relevant chunks with their note_id, title, ticker, date, rating and price target. "
-            "Extract filters from the question whenever it names a company/ticker, a sector, or a "
-            "time window - filters are applied before ranking, so they sharply improve precision. "
-            "Call it several times for multi-part or over-time questions (e.g. once per company, "
-            "or once per period)."
-        ),
-        "eager_input_streaming": True,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "What to look for, in natural language.",
-                },
-                "ticker": {
-                    "type": "string",
-                    "description": "Restrict to one covered ticker, e.g. ASML, NVDA, HSBA.",
-                },
-                "sector": {
-                    "type": "string",
-                    "description": "Restrict to one sector, e.g. Semiconductors, Banks.",
-                },
-                "date_from": {
-                    "type": "string",
-                    "description": "Earliest publish date, inclusive, YYYY-MM-DD.",
-                },
-                "date_to": {
-                    "type": "string",
-                    "description": "Latest publish date, inclusive, YYYY-MM-DD.",
-                },
-            },
-            "required": ["query"],
-            "additionalProperties": False,
+    _tool(
+        "search_notes",
+        "Hybrid (semantic + keyword) search over the firm's equity research notes. Returns the "
+        "most relevant chunks with their note_id, title, ticker, date, rating and price target. "
+        "Extract filters from the question whenever it names a company/ticker, a sector, or a "
+        "time window - filters are applied before ranking, so they sharply improve precision. "
+        "Call it several times for multi-part or over-time questions (e.g. once per company, "
+        "or once per period).",
+        {
+            "query": {"type": "string", "description": "What to look for, in natural language."},
+            "ticker": {"type": "string",
+                       "description": "Restrict to one covered ticker, e.g. ASML, NVDA, HSBA."},
+            "sector": {"type": "string",
+                       "description": "Restrict to one sector, e.g. Semiconductors, Banks."},
+            "date_from": {"type": "string",
+                          "description": "Earliest publish date, inclusive, YYYY-MM-DD."},
+            "date_to": {"type": "string",
+                        "description": "Latest publish date, inclusive, YYYY-MM-DD."},
         },
-    },
-    {
-        "name": "get_note",
-        "description": (
-            "Fetch the full text and metadata of one research note by note_id. Use it when a "
-            "search chunk is not enough, e.g. to read a note's full thesis, valuation or risks."
-        ),
-        "eager_input_streaming": True,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "note_id": {"type": "string", "description": "A note_id from search results."},
-            },
-            "required": ["note_id"],
-            "additionalProperties": False,
-        },
-    },
+        ["query"],
+    ),
+    _tool(
+        "get_note",
+        "Fetch the full text and metadata of one research note by note_id. Use it when a "
+        "search chunk is not enough, e.g. to read a note's full thesis, valuation or risks.",
+        {"note_id": {"type": "string", "description": "A note_id from search results."}},
+        ["note_id"],
+    ),
 ]
 
 

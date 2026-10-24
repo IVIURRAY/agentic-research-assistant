@@ -21,13 +21,18 @@ def _hit(cid: str) -> ChunkHit:
                     published_date="2026-01-01", heading=None, content="c")
 
 
-def test_parse_and_chunk_by_heading():
+def test_parse_and_chunk_by_paragraph():
     note = parse_note(NOTES / "asml-2026-04-16.md")
     assert note.ticker == "ASML" and note.rating == "Buy" and note.previous_rating == "Hold"
     assert note.published_date == dt.date(2026, 4, 16)
     chunks = chunk_note(note)
-    assert [c.heading for c in chunks] == ["Summary", "What changed", "Valuation", "Risks"]
-    assert chunks[0].chunk_id == "asml-2026-04-16#0"
+    # One chunk per paragraph; a section with two paragraphs yields two chunks.
+    assert [c.heading for c in chunks] == [
+        "Summary", "What changed", "Valuation", "Order book quality", "Order book quality",
+        "Estimate changes", "Estimate changes", "Risks"]
+    assert [c.chunk_id for c in chunks] == [f"asml-2026-04-16#{i}" for i in range(len(chunks))]
+    # The one-line disclaimer is merged into the preceding Risks paragraph, not its own chunk.
+    assert chunks[-1].content.startswith("Order lumpiness") and "Synthetic note" in chunks[-1].content
     header = embedding_text(note, chunks[0]).splitlines()[0]
     assert "ASML Holding (ASML)" in header and "2026-04-16" in header
 
@@ -64,9 +69,10 @@ def test_cited_note_ids():
 
 
 def test_routing():
-    assert route_after_agent({"stop_reason": "tool_use", "steps": 1}) == "tools"
-    assert route_after_agent({"stop_reason": "end_turn", "steps": 1}) == "__end__"
-    assert route_after_agent({"stop_reason": "tool_use", "steps": 99}) == "__end__"
+    call = [{"id": "c1", "name": "search_notes", "input": {}, "parse_error": None}]
+    assert route_after_agent({"pending_tool_calls": call, "steps": 1}) == "tools"
+    assert route_after_agent({"pending_tool_calls": [], "steps": 1}) == "__end__"
+    assert route_after_agent({"pending_tool_calls": call, "steps": 99}) == "__end__"
 
 
 def test_retrieval_metrics():

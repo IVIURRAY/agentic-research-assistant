@@ -7,6 +7,8 @@ import ReactMarkdown from "react-markdown";
 
 import type { ResearchMessage, RunData, Source, SourcesData, ToolData } from "@/lib/types";
 
+import { NoteViewer } from "./note-viewer";
+
 const SUGGESTIONS = [
   "How has our view on ASML changed since Q1?",
   "Why did we downgrade Novo Nordisk?",
@@ -95,7 +97,17 @@ function Feedback({ run }: { run?: RunData }) {
   );
 }
 
-function SourceCard({ source, cited, active }: { source: Source; cited: boolean; active: boolean }) {
+function SourceCard({
+  source,
+  cited,
+  active,
+  onView,
+}: {
+  source: Source;
+  cited: boolean;
+  active: boolean;
+  onView: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (active) ref.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -105,7 +117,9 @@ function SourceCard({ source, cited, active }: { source: Source; cited: boolean;
     <div ref={ref} id={`src-${source.note_id}`} className={`source ${cited ? "cited" : ""} ${active ? "active" : ""}`}>
       <div className="source-meta">
         <code>{source.note_id}</code>
-        <span>{source.published_date}</span>
+        <span className={`badge ${cited ? "badge-cited" : "badge-retrieved"}`}>
+          {cited ? "Cited" : "Retrieved only"}
+        </span>
       </div>
       <div className="source-title">{source.title}</div>
       <div className="source-tags">
@@ -113,6 +127,10 @@ function SourceCard({ source, cited, active }: { source: Source; cited: boolean;
         {source.sector && <span className="tag">{source.sector}</span>}
         {source.rating && <span className={`tag rating-${source.rating.toLowerCase()}`}>{source.rating}</span>}
         {pt && <span className="tag">PT {pt}</span>}
+        <span className="tag">{source.published_date}</span>
+      </div>
+      <div className="source-counts muted">
+        {source.chunks.length} passage{source.chunks.length === 1 ? "" : "s"} retrieved
       </div>
       {(cited || active) &&
         source.chunks.slice(0, 3).map((c) => (
@@ -121,6 +139,9 @@ function SourceCard({ source, cited, active }: { source: Source; cited: boolean;
             {c.content.length > 420 ? `${c.content.slice(0, 420)}…` : c.content}
           </blockquote>
         ))}
+      <button className="view-note" onClick={onView}>
+        View full note →
+      </button>
     </div>
   );
 }
@@ -129,6 +150,7 @@ export default function Page() {
   const [input, setInput] = useState("");
   const [focusId, setFocusId] = useState<string | null>(null);
   const [activeCite, setActiveCite] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<Source | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
   const { messages, sendMessage, status, error, stop } = useChat<ResearchMessage>({
@@ -154,7 +176,17 @@ export default function Page() {
 
   const cited = new Set(panel?.run?.cited ?? []);
   const sources = panel ? Object.values(panel.sources) : [];
-  sources.sort((a, b) => Number(cited.has(b.note_id)) - Number(cited.has(a.note_id)));
+  const citedSources = sources.filter((s) => cited.has(s.note_id));
+  const otherSources = sources.filter((s) => !cited.has(s.note_id));
+  const card = (s: Source) => (
+    <SourceCard
+      key={s.note_id}
+      source={s}
+      cited={cited.has(s.note_id)}
+      active={activeCite === s.note_id}
+      onView={() => setViewing(s)}
+    />
+  );
 
   return (
     <div className="shell">
@@ -253,11 +285,27 @@ export default function Page() {
         {sources.length === 0 ? (
           <p className="muted">Notes the assistant retrieves will appear here.</p>
         ) : (
-          sources.map((s) => (
-            <SourceCard key={s.note_id} source={s} cited={cited.has(s.note_id)} active={activeCite === s.note_id} />
-          ))
+          <>
+            {citedSources.length > 0 && (
+              <h4 className="panel-group">Cited in the answer · {citedSources.length}</h4>
+            )}
+            {citedSources.map(card)}
+            {otherSources.length > 0 && (
+              <h4 className="panel-group">Retrieved but not cited · {otherSources.length}</h4>
+            )}
+            {otherSources.map(card)}
+          </>
         )}
       </aside>
+
+      {viewing && (
+        <NoteViewer
+          noteId={viewing.note_id}
+          cited={cited.has(viewing.note_id)}
+          highlight={new Set(viewing.chunks.map((c) => c.chunk_id))}
+          onClose={() => setViewing(null)}
+        />
+      )}
 
       <form
         className="composer"
