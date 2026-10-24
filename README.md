@@ -18,6 +18,18 @@ Full rationale: [Reference Architecture (PDF)](Agentic%20Research%20Assistant%20
 One deliberate change from that document: the model runs through OpenRouter (a free NVIDIA
 Nemotron model by default) instead of the Anthropic API, so the project needs no paid key.
 
+## See it in action
+
+<p align="center">
+  <img src="docs/demo.gif" alt="The chat UI answering 'How has our view on ASML changed since Q1?': the agent's searches appear with their filters, a cited answer streams in, clicking a citation highlights the source card, and View full note opens the whole note with only the retrieved passage highlighted." width="100%">
+</p>
+
+A real run against the app: the question goes in, the agent's searches show the filters it chose
+(`ticker=ASML`, `date_from=…`), and the answer streams back with citation chips. Clicking a
+citation highlights its source, and **View full note** opens the whole note with the passages the
+agent actually retrieved highlighted. Waiting for the model is sped up; `make demo` re-records it
+against your running app.
+
 ## What makes it agentic
 
 An agent that calls search once is RAG with extra latency. This one has two tools and questions
@@ -212,7 +224,8 @@ All settings are environment variables. See [`.env.example`](.env.example) and
 backend/
   app/            ingest, retrieval, rerank, tools, agent (LangGraph), llm (OpenRouter), telemetry, FastAPI
   evals/          dataset.jsonl (30 questions), metrics, LLM judges, runners, thresholds
-  scripts/        generate_notes.py (corpus), render_*_gif.py (the two GIFs; `make gif`)
+  scripts/        generate_notes.py + note_expansions.py (corpus), render_*_gif.py (diagrams;
+                  `make gif`), record_demo.py (UI recording; `make demo`)
   tests/          unit tests + integration tests with a scripted model stream
 frontend/         Next.js app: chat page, /api/chat SSE → AI SDK bridge, /api/feedback
 data/notes/       50 synthetic research notes (markdown + frontmatter)

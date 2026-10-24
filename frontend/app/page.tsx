@@ -113,6 +113,9 @@ function SourceCard({
     if (active) ref.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [active]);
   const pt = formatPT(source);
+  // get_note returns the whole note as one "#full" chunk; show that as a tag, not a passage.
+  const passages = source.chunks.filter((c) => !c.chunk_id.endsWith("#full"));
+  const readInFull = passages.length < source.chunks.length;
   return (
     <div ref={ref} id={`src-${source.note_id}`} className={`source ${cited ? "cited" : ""} ${active ? "active" : ""}`}>
       <div className="source-meta">
@@ -130,10 +133,11 @@ function SourceCard({
         <span className="tag">{source.published_date}</span>
       </div>
       <div className="source-counts muted">
-        {source.chunks.length} passage{source.chunks.length === 1 ? "" : "s"} retrieved
+        {passages.length} passage{passages.length === 1 ? "" : "s"} retrieved
+        {readInFull && " · read in full"}
       </div>
       {(cited || active) &&
-        source.chunks.slice(0, 3).map((c) => (
+        passages.slice(0, 3).map((c) => (
           <blockquote key={c.chunk_id}>
             {c.heading && <strong>{c.heading}. </strong>}
             {c.content.length > 420 ? `${c.content.slice(0, 420)}…` : c.content}

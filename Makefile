@@ -6,7 +6,7 @@ export
 BACKEND := cd backend &&
 PY := .venv/bin/python
 
-.PHONY: help setup db ingest test eval-retrieval eval eval-local api web up down smoke validate gif
+.PHONY: help setup db ingest test eval-retrieval eval eval-local api web up down smoke validate gif demo
 
 help:
 	@grep -hE '^[a-z-]+:.*## ' Makefile | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -55,3 +55,6 @@ validate: test eval-retrieval ## Everything that runs without an API key
 gif: ## Re-render docs/architecture.gif and docs/agent-loop.gif
 	$(BACKEND) $(PY) scripts/render_architecture_gif.py
 	$(BACKEND) $(PY) scripts/render_agent_gif.py
+
+demo: ## Re-record docs/demo.gif from the running app (uses Chrome; ~3 model calls)
+	$(BACKEND) $(PY) scripts/record_demo.py

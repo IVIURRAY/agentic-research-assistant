@@ -69,13 +69,12 @@ export function NoteViewer({
         </header>
         {note && (
           <p className="viewer-legend muted">
-            {readWhole ? (
-              "The agent read this whole note."
-            ) : (
+            {hits > 0 && (
               <>
-                <mark>Highlighted</mark>: the {hits} passage{hits === 1 ? "" : "s"} the agent retrieved.
+                <mark>Highlighted</mark>: the {hits} passage{hits === 1 ? "" : "s"} search retrieved.
               </>
             )}
+            {readWhole && (hits > 0 ? " The agent also opened the whole note." : "The agent opened the whole note.")}
             {cited ? " The answer cites this note." : " The answer doesn’t cite this note."}
           </p>
         )}
