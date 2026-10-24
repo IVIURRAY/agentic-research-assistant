@@ -95,11 +95,6 @@ trajectory eval checks the model chose the right tools and filters along the way
 Thresholds live in [`backend/evals/thresholds.json`](backend/evals/thresholds.json). A run scoring
 below any threshold exits non-zero, which is what turns it into a release gate.
 
-**Why the evals matter here:** see [`docs/ITERATIONS.md`](docs/ITERATIONS.md), a log of each
-change after the first build and the eval evidence behind it. It covers what switching to a free
-model silently broke, how a chunking change was diagnosed and fixed one step at a time, and
-before/after experiments compared in LangSmith.
-
 ## Quick start (Docker)
 
 You need Docker and an [OpenRouter key](https://openrouter.ai/settings/keys). The default model is
