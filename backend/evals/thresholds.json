@@ -1,0 +1,13 @@
+{
+  "retrieval": {
+    "recall@5": 0.85,
+    "mrr": 0.75
+  },
+  "agent": {
+    "retrieval_recall": 0.85,
+    "citation_recall": 0.75,
+    "trajectory": 0.8,
+    "correctness": 0.8,
+    "groundedness": 0.8
+  }
+}

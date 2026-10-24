@@ -1,0 +1,111 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Runs on every build, no secrets needed: unit + integration tests (LLM scripted),
+  # the deterministic retrieval eval gate, and the frontend typecheck/build.
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: research
+          POSTGRES_PASSWORD: research
+          POSTGRES_DB: research
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U research -d research"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      DATABASE_URL: postgresql://research:research@localhost:5432/research
+      FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.models
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/cache@v4
+        with:
+          path: .models
+          key: fastembed-${{ hashFiles('backend/app/config.py') }}
+      - run: uv sync --python 3.12
+      - name: Ingest notes
+        run: uv run python -m app.ingest --notes-dir ../data/notes
+      - name: Tests
+        run: uv run pytest -q
+      - name: Retrieval eval gate (recall@5, MRR)
+        run: uv run python -m evals.retrieval_eval --json ../eval-retrieval.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend typecheck + build
+        working-directory: frontend
+        run: npm ci && npm run build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-retrieval
+          path: eval-retrieval.json
+
+  # Release gate: the agent eval against the configured LLM, uploaded to LangSmith as an experiment.
+  # Runs when the OPENROUTER_API_KEY secret is set; skipped otherwise (e.g. forks).
+  # All 30 questions by default (~120 requests: fine once the OpenRouter account has
+  # $10 of credits, i.e. 1,000 free-model requests/day). Without credits (50/day), set the
+  # repository variable EVAL_LIMIT=5. The runner checks the remaining OpenRouter quota first and
+  # fails fast with a clear message if the run won't fit.
+  agent-eval:
+    needs: test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: research
+          POSTGRES_PASSWORD: research
+          POSTGRES_DB: research
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U research -d research"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      DATABASE_URL: postgresql://research:research@localhost:5432/research
+      FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.models
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      HAS_LLM_KEY: ${{ secrets.OPENROUTER_API_KEY != '' }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_PROJECT: research-assistant-ci
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+        if: env.HAS_LLM_KEY == 'true'
+      - uses: astral-sh/setup-uv@v6
+        if: env.HAS_LLM_KEY == 'true'
+      - uses: actions/cache@v4
+        if: env.HAS_LLM_KEY == 'true'
+        with:
+          path: .models
+          key: fastembed-${{ hashFiles('backend/app/config.py') }}
+      - if: env.HAS_LLM_KEY == 'true'
+        run: uv sync --python 3.12 && uv run python -m app.ingest --notes-dir ../data/notes
+      - name: Agent eval gate (correctness, groundedness, trajectory, recall)
+        if: env.HAS_LLM_KEY == 'true'
+        env:
+          EVAL_LIMIT: ${{ vars.EVAL_LIMIT }}
+        run: |
+          uv run python -m evals.run_evals --json ../eval-agent.json \
+            ${EVAL_LIMIT:+--limit "$EVAL_LIMIT"}
+      - uses: actions/upload-artifact@v4
+        if: always() && env.HAS_LLM_KEY == 'true'
+        with:
+          name: eval-agent
+          path: eval-agent.json

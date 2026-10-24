@@ -1,0 +1,64 @@
+name: research-assistant
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: research
+      POSTGRES_PASSWORD: research
+      POSTGRES_DB: research
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U research -d research"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot: chunk + embed + upsert the notes, then exit. Idempotent.
+  ingest:
+    build: ./backend
+    command: ["python", "-m", "app.ingest", "--notes-dir", "/data/notes"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://research:research@postgres:5432/research
+    volumes:
+      - ./data:/data:ro
+      - models:/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://research:research@postgres:5432/research
+    ports:
+      - "8000:8000"
+    volumes:
+      - models:/models
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  web:
+    build: ./frontend
+    environment:
+      API_URL: http://api:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  models:
