@@ -163,7 +163,8 @@ def sync_dataset(client, examples: list[dict]) -> str:
     return DATASET_NAME
 
 
-async def run_langsmith(examples: list[dict], concurrency: int) -> dict[str, list[float]]:
+async def run_langsmith(examples: list[dict], concurrency: int,
+                        label: str | None = None) -> dict[str, list[float]]:
     from langsmith import Client, aevaluate
 
     client = Client()
@@ -175,10 +176,11 @@ async def run_langsmith(examples: list[dict], concurrency: int) -> dict[str, lis
         target,
         data=data,
         evaluators=EVALUATORS,
-        experiment_prefix=settings.openrouter_model.replace("/", "_"),
-        metadata={"model": settings.openrouter_model,
+        experiment_prefix="-".join(filter(None, [label, settings.openrouter_model.replace("/", "_")])),
+        metadata={"label": label, "model": settings.openrouter_model,
                   "judge_model": settings.openrouter_judge_model,
-                  "reranker": settings.reranker, "git_sha": os.getenv("GITHUB_SHA", "local")},
+                  "reranker": settings.reranker, "candidate_k": settings.candidate_k,
+                  "rerank_k": settings.rerank_k, "git_sha": os.getenv("GITHUB_SHA", "local")},
         max_concurrency=concurrency,
     )
     scores: dict[str, list[float]] = defaultdict(list)
@@ -237,14 +239,17 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--json", help="write summary scores here")
     parser.add_argument("--skip-quota-check", action="store_true")
+    parser.add_argument("--label", help="name prefix for the LangSmith experiment, e.g. before")
     args = parser.parse_args()
 
     examples = load_dataset()[: args.limit] if args.limit else load_dataset()
     if not args.skip_quota_check:
         openrouter_quota_check(len(examples))
     use_langsmith = bool(settings.langsmith_api_key) and not args.local
-    runner = run_langsmith if use_langsmith else run_local
-    scores = asyncio.run(runner(examples, args.concurrency))
+    if use_langsmith:
+        scores = asyncio.run(run_langsmith(examples, args.concurrency, args.label))
+    else:
+        scores = asyncio.run(run_local(examples, args.concurrency))
 
     summary = {k: mean(v) for k, v in sorted(scores.items())}
     if not summary:
